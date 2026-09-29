@@ -1,6 +1,6 @@
 [project]
 name = "llamadashboard"
-version = "0.1.0"
+version = "0.2.1"
 description = "Terminal dashboard for llama.cpp: device + model runtime monitoring, cooperating with (but decoupled from) user run.bat launch recipes."
 requires-python = ">=3.12"
 dependencies = [
