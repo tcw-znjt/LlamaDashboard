@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 测试与缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志与临时数据
+*.log
+e2e-dump.jsonl
+s.jsonl
+
+# GitHub 发布目录(本地生成,只含运行必需文件)
+dist-github/
