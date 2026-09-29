@@ -13,8 +13,10 @@ from pathlib import Path
 from ..model import EXTRA_SOURCE, Profile, ServerFacts
 from ..state import ExtraProfile
 
-# run.ps1 launches the exe with  -m "D:\models\x.gguf"  (backtick-continued lines)
-_MODEL_RE = re.compile(r'(?:-m|--model(?:=|\s))\s*"([^"]+\.gguf)"', re.IGNORECASE)
+# run.ps1 launches the exe with  -m "D:\models\x.gguf"  (backtick-continued lines);
+# a recipe may also wrap a launcher script (-Model "…gguf" / -Model '…gguf').
+_MODEL_RE = re.compile(r'(?:-m|-model|--model)(?:=|\s)\s*["\']([^"\']+\.gguf)["\']',
+                       re.IGNORECASE)
 
 LOG_GLOB = "server*.log"
 _STAMP_RE = re.compile(r"^server-(\d{8}-\d{6})\.log$")

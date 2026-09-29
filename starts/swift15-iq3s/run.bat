@@ -1,5 +1,8 @@
 @echo off
 rem swift15-iq3s - live console output + new per-run log (server-YYYYMMDD-HHMMSS.log)
+rem 单实例:两个受支持的 server 进程名只要还在跑就先结束(切换 profile 时避免双开)
+tasklist /fi "imagename eq llama-kvmem-server.exe" 2>nul | find /i "llama-kvmem-server" >nul
+if not errorlevel 1 taskkill /f /im llama-kvmem-server.exe
 tasklist /fi "imagename eq llama-server.exe" 2>nul | find /i "llama-server" >nul
 if not errorlevel 1 taskkill /f /im llama-server.exe
 echo Starting llama-server, model loads in 1-2 minutes...

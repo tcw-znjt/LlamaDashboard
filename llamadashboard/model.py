@@ -13,6 +13,21 @@ def _flag(args: dict[str, str], *names: str) -> str | None:
     return None
 
 
+@dataclass
+class PromptProgress:
+    """Real-time prefill progress from the log's `prompt processing` line.
+
+    kvmem prints this line during prompt (prefill) - unlike the HTTP
+    `n_prompt_tokens_processed`, which only moves on the settlement frame for that
+    dialect. `slot` is None when the line carries no id (kvmem) so the store can
+    attribute it to the active slot."""
+
+    slot: int | None = None
+    n_tokens: int = 0
+    progress: float = 0.0        # 0..1
+    rate: float | None = None    # tokens per second, as reported
+
+
 EXTRA_SOURCE = "记住的"       # source 标记:来自本机状态文件的 extra_profiles(可删除)
 
 

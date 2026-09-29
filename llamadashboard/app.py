@@ -20,7 +20,7 @@ from .config import Settings
 from .health import HealthBoard
 from .model import EXTRA_SOURCE, Profile
 from .runner import Runner
-from .sources import profiles
+from .sources import profiles, proc
 from .store import SessionStore
 
 
@@ -315,15 +315,31 @@ class LogOverlayScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class RowLayout(Horizontal):
+    """上三框的容器:自身尺寸变化(终端 resize)时立刻重算四个面板宽度。
+
+    App 不是 Widget,DashboardApp.on_resize 实测不会被触发(内联宽度会一直保持
+    旧值,框的右半被终端遮住),所以把钩子放在真正会收到 Resize 的容器上。
+    """
+
+    def on_resize(self) -> None:
+        app = self.app
+        if isinstance(app, DashboardApp):
+            app._sync_row_layout()
+
+
 class DashboardApp(App[None]):
     TITLE = "llama.cpp dashboard"
     CSS = """
     #header { height: auto; padding: 0 1; }
     #metrics { height: auto; padding: 0 1; }
-    #mid { height: auto; padding: 0 1; }
-    #gpu { width: 3fr; border: round $primary; padding: 0 1; }
-    #live { width: 2fr; border: round $success; padding: 0 1; margin-left: 1; }
-    #history { height: auto; max-height: 16; border: round $warning; padding: 0 1; }
+    #row { height: auto; }
+    #gpu { width: auto; max-width: 100%; height: auto; border: round $primary; padding: 0 1; }
+    #live-prompt { width: auto; max-width: 100%; height: auto; border: round $success; padding: 0 1; }
+    #live-decode { width: auto; max-width: 100%; height: auto; border: round $success; padding: 0 1; }
+    #row.stacked { layout: vertical; }        /* 放不下三框时上下排列,不裁切数值 */
+    /* 历史表:宽度先按内容取最小,再与上方行宽对齐(由 _sync_row_layout 显式赋值) */
+    #history { width: auto; max-width: 100%; height: auto; max-height: 16; border: round $warning; padding: 0 1; }
     #hint { height: 1; color: $text 70%; padding: 0 1; }
     #status { height: 1; padding: 0 1; }
     """
@@ -349,13 +365,16 @@ class DashboardApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="header")
         yield Static(id="metrics")
-        with Horizontal(id="mid"):
+        with RowLayout(id="row"):
             gpu = Static(id="gpu", classes="GpuPanel")
             gpu.border_title = "GPU"
             yield gpu
-            live = Static(id="live", classes="LivePanel")
-            live.border_title = "实时"
-            yield live
+            lp = Static(id="live-prompt", classes="LivePanel")
+            lp.border_title = "实时 · prompt"
+            yield lp
+            ld = Static(id="live-decode", classes="LivePanel")
+            ld.border_title = "实时 · decode"
+            yield ld
         hist = Static(id="history")
         hist.border_title = "请求历史 (新→旧)"
         yield hist
@@ -385,12 +404,44 @@ class DashboardApp(App[None]):
         gpu = self.query_one("#gpu", Static)
         gpu.border_title = "GPU" + (" (正在加载模型…)" if self.runner.window.active and st.facts is None else "")
         gpu.update(render.gpu_text(st, st.show_thermal_detail))
-        live = self.query_one("#live", Static)
-        live.border_title = "实时" + (" (正在处理)" if st.current_slot() else " (空闲)")
-        live.update(render.live_text(st))
+        cur = st.current_slot()
+        if cur is None:                          # 无活动槽:两个框都空闲
+            pb = db = " (空闲)"
+        elif cur.phase == "prompt":              # 还在消化输入:prompt 在处理,decode 尚未开始
+            pb, db = " (正在处理)", " (空闲)"
+        else:                                    # 已在出字:输入阶段完成
+            pb, db = " (已完成)", " (解码中)"
+        self.query_one("#live-prompt", Static).border_title = "实时 · prompt" + pb
+        self.query_one("#live-decode", Static).border_title = "实时 · decode" + db
+        self.query_one("#live-prompt", Static).update(render.live_prompt_text(st))
+        self.query_one("#live-decode", Static).update(render.live_decode_text(st))
+        self._sync_row_layout()
         self.query_one("#history", Static).update(render.history_text(st, max_rows=10))
         self.query_one("#status", Static).update(
             render.status_text(st, self.health, self.settings.sample_interval, self.runner.paused, now))
+
+    def _sync_row_layout(self) -> None:
+        """宽度规则:先满足文字内容的最小宽度,再为对齐适当变宽。
+
+        - 三框排得下 → 同行,各自贴合内容;历史表宽度 = 三框宽度之和(内容更宽时以内容为准);
+        - 三框排不下 → 上下堆叠,四个框统一取"最宽者"的宽度(仍不小于各自内容宽度);
+        - 任何宽度都不超过终端可用宽度。
+        """
+        st = self.store
+        panels = (("#gpu", render.gpu_text(st, st.show_thermal_detail)),
+                  ("#live-prompt", render.live_prompt_text(st)),
+                  ("#live-decode", render.live_decode_text(st)))
+        widths = [(sel, render.panel_width(r)) for sel, r in panels]
+        available = self.size.width
+        stacked = sum(w for _, w in widths) > available
+        self.query_one("#row").set_class(stacked, "stacked")
+        hist_w = render.history_panel_width(st, [w for _, w in widths], stacked, available)
+        target = max([w for _, w in widths] + [hist_w]) if stacked else None
+        for sel, w in widths:
+            self.query_one(sel).styles.width = min(target or w, available)
+        self.query_one("#history").styles.width = min(hist_w, available)
+
+    # 终端尺寸变化时的重算钩子在 RowLayout.on_resize(App 不是 Widget,不会收到 Resize)
 
     # ------------- actions -------------
 
@@ -406,14 +457,15 @@ class DashboardApp(App[None]):
 
     def action_stop(self) -> None:
         if self.store.facts is None:
-            self.notify("没有在跑的 llama-server", severity="warning")
+            self.notify(f"没有在跑的 server 进程({' / '.join(proc.short_names())})", severity="warning")
             return
         self._confirm("停止当前 server?(模型将卸载,重新加载需 1-2 分钟)",
                       lambda: self._run_async(self.runner.do_stop()))
 
     def action_restart(self) -> None:
         if self.store.facts is None:
-            self.notify("没有在跑的 llama-server,可用 m 启动 profile", severity="warning")
+            self.notify(f"没有在跑的 server 进程({' / '.join(proc.short_names())}),可用 m 启动 profile",
+                        severity="warning")
             return
         mode = "运行 run.bat" if self.store.profile else "重放发现的命令行(attach 模式)"
         self._confirm(f"重启 server?{mode}", lambda: self._run_async(self.runner.do_restart()))

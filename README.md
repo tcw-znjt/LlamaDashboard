@@ -47,19 +47,27 @@ server 已经在跑(比如你双击过 `run.bat`,或是别的方式起的)也没
 最快做法 = 复制一个能跑的 profile 再改字段(**目录名就是 `m` 列表里显示的名字**):
 
 
-`run.bat` —— 一般**不用改**(只有 exe 不叫 `llama-server.exe` 时,才改下面两处的 imagename):
+`run.bat` —— 一般**不用改**(默认把两个受支持的 server 进程名都先杀掉,保证单实例;
+只用某一个 build 时可以删掉另一段):
 
 ```bat
+@echo off
+rem 单实例:两个受支持的 server 进程名只要还在跑就先结束(切换 profile 时避免双开)
+tasklist /fi "imagename eq llama-kvmem-server.exe" 2>nul | find /i "llama-kvmem-server" >nul
+if not errorlevel 1 taskkill /f /im llama-kvmem-server.exe
 tasklist /fi "imagename eq llama-server.exe" 2>nul | find /i "llama-server" >nul
 if not errorlevel 1 taskkill /f /im llama-server.exe
+echo Starting llama-server, model loads in 1-2 minutes...
+echo A new log file (server-*.log) is created in this folder for each run.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"
+pause
 ```
 
 `run.ps1` —— **要改的字段全在这**(下表按 gsq-iq3s 的真实内容标注):
 
 | 字段 | 必改? | 说明 | 本机取值 |
 |---|---|---|---|
-| `$exe = "…"` | ★必改 | `llama-server.exe` 绝对路径;换 build 目录时改这里 | `E:\2-TCW\workspace\llama.cpp\b11223\llama-server.exe` |
+| `$exe = "…"` | ★必改 | server 可执行文件绝对路径(受支持的 build 见下节);换 build 目录时改这里 | `E:\2-TCW\workspace\llama.cpp\b11223\llama-server.exe` |
 | `-m "…"` | ★必改 | 要服务的 .gguf 绝对路径 | `D:\models\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` |
 | `$port = …` / `foreach ($cand in …)` | 建议改 | 首选端口 + 回退端口列表(被占用或撞上 Hyper-V 排除段时自动回退) | `8088` / `9188, 10188, 18888, 28088` |
 | `--api-key …` | 建议改 | bearer 密钥;dashboard 从活进程 cmdline 读,改了自动跟上 | `123456` |
@@ -77,6 +85,39 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"
 3. 首选端口和回退端口至少一个可用(全被占用会打印 `ERROR: no available port` 并退出);
 4. 日志行保持 `$PSScriptRoot\server-$stamp.log` —— 改到别处 dashboard 就找不到历史;
 5. 先双击 `run.bat` 自己跑通(能生成 `server-<时间戳>.log`、`/health` 返回 ok),再让 dashboard 调它。
+
+### 支持监控的 server 进程
+
+dashboard 按**活进程名**发现 server,目前识别两个 exe(大小写不敏感),谁在跑就监控谁
+(同一时刻只监控一个,多个时取 pid 最小的那个):
+
+| 进程名 | 说明 |
+|---|---|
+| `llama-server.exe` | 官方 llama.cpp server |
+| `llama-kvmem-server.exe` | KV 显存管理改版 build —— 同一套监控:`/slots`、`/props`、日志通道全部适用 |
+
+连接事实(端口、api-key、模型、ctx)一律从**活进程命令行**读,所以换 build 不需要改任何 dashboard 配置;
+头部会显示当前被监控的进程名(如 `llama-kvmem-server`),待机态提示里也会列出这两个名字。
+
+**对应的 `run.bat` 要按实际 exe 名杀旧进程**,否则"换模型/重启=单实例"的保证会失效(两处都要换):
+
+```bat
+rem profile 用 llama-server.exe
+tasklist /fi "imagename eq llama-server.exe" 2>nul | find /i "llama-server" >nul
+if not errorlevel 1 taskkill /f /im llama-server.exe
+
+rem profile 用 llama-kvmem-server.exe(只换名字)
+tasklist /fi "imagename eq llama-kvmem-server.exe" 2>nul | find /i "llama-kvmem-server" >nul
+if not errorlevel 1 taskkill /f /im llama-kvmem-server.exe
+```
+
+`run.ps1` 里相应地 `$exe = "…\llama-kvmem-server.exe"`,其余参数照旧。
+
+**profile 也可以不直接调 exe**,而是调一个包装脚本(如 KVMem 的 `start-bonsai.ps1`,最终起的仍是
+`llama-kvmem-server.exe`)。这类包装脚本自己不落日志也不做端口回退,所以 `run.ps1` 仍要负责这两件事:
+探测/回退端口(把选中的端口透传给包装脚本),以及把控制台输出留存成 `server-<时间戳>.log`。
+dashboard 从 `run.ps1` 里读 `-m "….gguf"` / `-Model "….gguf"` 做模型匹配,包装脚本式 recipe 因此照样能被认领
+(参考样例:`starts/qwen38-bonsai`)。
 
 ### 启动后选择 starts 目录下的模型
 
@@ -128,12 +169,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"
 
 ## 面板与字段来源
 
-- **头部**:模型名/端口/运行时长 ← 进程 cmdline;ctx/槽位 ← cmdline 或 `/props`;build ← `/props.build_info`
-- **输出/输入速度** ← `/slots` 计数差分;运行均值 ← 会话历史表加权
-- **KV 命中率** 本次 ← `/slots.n_prompt_tokens_cache ÷ n_prompt_tokens`;每请求/累计 ← 日志结算块派生(完整输入 = 释放点 n_tokens − 输出)
-- **MTP 接受率** ← 日志 `draft acceptance` 行;未启用显示 `—`
+- **头部**:模型名/端口/运行时长 ← 进程 cmdline;ctx/槽位 ← cmdline 或 `/props`;进程名 ← 被监控的 exe;build ← `/props.build_info`
+- **输出速度** ← 每次重绘的实时值(上一 tick → 本 tick 的 `n_decoded` 增量 ÷ 实际间隔);无进展的 tick 保留上一值、不归零
+- **输入速度** ← prompt 阶段同法实时值;阶段结束(进入 decode 或请求结束)后**冻结**,直到下一次 prompt 阶段开始,不回落到上一请求
+- **运行均值** ← **服务自身报告的 avg speed**。取值顺序:`/metrics` 的 `llamacpp:tokens_predicted_second` / `llamacpp:prompt_tokens_second`(仅当该 build 开启该端点),否则用**日志结算块**里与自带 web 界面同源的每请求速率;两者都不可得时降级为会话内时间加权均值,并在面板标注 `(会话)`
+  - 实测:`llama-kvmem-server` 没有 `/metrics`(`endpoint_metrics=false`,exe 亦无 `--metrics` 开关),其 web 界面的 “Avg speed” 取自流式响应的 `timings`,与日志结算块的 `eval time / prompt eval time` 完全一致(见 `tests/fixtures/README.md`)
+- **KV 命中率** 本次 ← `/slots.n_prompt_tokens_cache ÷ 本次输入`;每请求/累计 ← 日志结算块(kvmem 直接给 `cache = N`,`n_prompt` 即本次输入;llama-server 用 释放点 n_tokens − 输出 推导)
+  - 注:kvmem 的 `n_prompt_tokens` **不**随生成 token 增长,llama-server 会 —— 面板按运行时观测自动区分
+- **MTP 接受率** ← 日志的推测解码统计行,接受 draft token ÷ 生成 draft token:
+  - llama-server:`slot print_timing: … | draft acceptance = X (A accepted / G generated)`
+  - `llama-kvmem-server`:**没有** `draft acceptance` 行,改读 `--verbosity 4` 下每请求一行的
+    `spec … statistics …: #gen tokens = G, #acc tokens = A`(累计值,面板取相邻两行的差值);
+    该 build 的 `/slots` 只有 `speculative: true`、响应 `timings` 也没有 draft 字段
+  - 已启用但日志没给统计(如 verbosity 不够)显示 `—` 并标注 **启用·无统计**;未启用显示 `—` / **未启用**
+  - 启动要求:kvmem 必须带 `--verbosity 4`(3 不打印该行)。本机 `scripts/windows/start-iq3.ps1`
+    已改为 4(日志量明显增大;想减小就把它降回 3,MTP 会退回 **启用·无统计**)
 - **请求历史** ← 日志结算块(精确 ms),权威源;`/slots` 首观快照补充
 - **GPU 面板** ← NVML;`功率受限` 等文案 = clocks event reasons 翻译;`降频余量` = 降频阈值 − 当前温度
+- **布局** 自上而下:头部 → 速率与命中行 → **GPU / 实时·prompt / 实时·decode 三框同一行** → 请求历史 → 键位/状态
+  - 宽度原则:**先满足文字内容的最小宽度,其次才是为美观适当变宽对齐**。三个上方面板各包住自己的内容;请求历史表在内容最小宽度之上与上方行对齐 —— 三框同行时等于三框宽度之和,三框堆叠(宽度不足)时等于四个面板中最宽者,内容更宽时以内容为准,且不超过终端宽度
+  - 三框自然宽度之和超过终端可用宽度时,整行退化为**上下排列**,数值不裁切
+  - 实时·prompt = 阶段 / 处理输入 / 输入速度 / 本次输入与缓存命中;实时·decode = 阶段 / 已生成·剩余 / 输出速度 / 上下文峰值
+  - 两个实时面板**默认常显最全字段**:当前取不到实时值时显示最近一次有效值(冻结速率、上次输入输出),从未有数据显示 `—`;面板不会因空闲或阶段切换而少行
+  - **终端尺寸变化(尤其是变窄)时四框立即重算宽度**,不等下一次 1Hz 重绘(重算钩子在 `RowLayout.on_resize`,`App.on_resize` 实测不会触发),任何框都不会越出终端右边界;暂停采样时也生效
+  - 请求历史表的**列宽贴合内容**(不写死列宽),列间只留必要 padding,数值列仍右对齐——写死列宽时短数值会在列内留下大片空白(「槽」与「输入」之间曾有 8 列空档)
 
 ## FAQ
 
@@ -150,7 +209,3 @@ llama.cpp 升级后日志格式漂移时,未知行只计入失败计数、面板
 `python -m llamadashboard --dump session.jsonl`,每个结算的请求追加一行 JSON。
 
 **方言实测(b11223)**:`/slots` 键面与 master 一致、`/props` 含 build_info、`/health` 免密钥、`/metrics` 默认关(不依赖)。
-
-## License
-
-[MIT](LICENSE) © 2026 tcw-znjt

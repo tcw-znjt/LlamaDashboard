@@ -9,7 +9,7 @@ from pathlib import Path
 from . import control
 from .config import Settings
 from .health import HealthBoard
-from .model import RequestRow
+from .model import PromptProgress, RequestRow
 from .sources import httpsrc, profiles, proc
 from .sources.logparse import LineParser
 from .sources.logtail import LogTailer
@@ -144,6 +144,12 @@ class Runner:
                 self.store.on_props(props)
             except Exception:  # noqa: BLE001
                 pass  # props is low-frequency; slots carries health counting
+            if st.dialect is not None and st.dialect.avg_tps_source == "metrics":
+                try:
+                    out_tps, in_tps = await self._http.avg_tps()
+                    st.on_server_avg(out_tps, in_tps, now)
+                except Exception:  # noqa: BLE001
+                    pass      # 取不到就留给面板走会话均值降级
 
     # ---------------- log ----------------
 
@@ -164,12 +170,21 @@ class Runner:
             row = self.parser.feed(ln, now)
             if row is not None:
                 rows.append(row)
+            pp = self._prompt_progress(ln)
+            if pp is not None:
+                self.store.on_prompt_progress(pp, now)
         for row in rows:
             self.store.on_request_row(row)
         extra_fail = self.parser.failures - self._parse_fail_base
         for _ in range(max(0, extra_fail)):
             src.record_fail()
         self._parse_fail_base = self.parser.failures
+
+    def _prompt_progress(self, ln: str) -> PromptProgress | None:
+        """分别调用各方言的实时 prefill 进度提取器(先落 kvmem,原版 llama 待实测补上)。
+        各方言行格式不同,谁匹配谁生效;不依赖 dialect 判定(实时行在 prompt 阶段就发)。"""
+        return (self.parser.kvmem_prompt_progress(ln)
+                or self.parser.vanilla_prompt_progress(ln))
 
     # ---------------- nvml ----------------
 

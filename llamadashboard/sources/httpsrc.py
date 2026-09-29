@@ -18,6 +18,32 @@ EXPECTED_SLOT_KEYS = {
 }
 
 
+# Prometheus names llama.cpp exposes when --metrics is on; there is no global
+# "avg speed" endpoint otherwise (verified: llama-kvmem-server has no /metrics at
+# all - its web UI reads the per-request timings of the streaming response).
+METRIC_OUT_KEYS = ("llamacpp:tokens_predicted_second", "tokens_predicted_second")
+METRIC_IN_KEYS = ("llamacpp:prompt_tokens_second", "prompt_tokens_second")
+
+
+def parse_metrics(text: str) -> tuple[float | None, float | None]:
+    """Prometheus 文本 -> (输出 avg t/s, 输入 avg t/s);取不到为 None。"""
+    out: float | None = None
+    inp: float | None = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name = line.split("{", 1)[0].strip()
+        try:
+            value = float(line.rsplit(" ", 1)[-1])
+        except ValueError:
+            continue
+        if out is None and name in METRIC_OUT_KEYS:
+            out = value
+        elif inp is None and name in METRIC_IN_KEYS:
+            inp = value
+    return out, inp
+
+
 @dataclass
 class ServerDialect:
     props_ok: bool = False
@@ -30,6 +56,10 @@ class ServerDialect:
     endpoint_metrics: bool | None = None
     default_n_ctx: int | None = None
     slot_keys: set[str] = field(default_factory=set)
+    # where the server's own avg speed comes from: "metrics" (Prometheus) or "log"
+    # (per-request settlement block, the same source the built-in web UI reads).
+    avg_tps_source: str | None = None
+    metrics_ok: bool | None = None
 
     @property
     def missing_slot_keys(self) -> set[str]:
@@ -67,6 +97,15 @@ class HttpSource:
         data = r.json()
         return data if isinstance(data, list) else []
 
+    async def metrics(self) -> str:
+        r = await self._client.get(self.base_url + "/metrics", headers=self._headers)
+        r.raise_for_status()
+        return r.text
+
+    async def avg_tps(self) -> tuple[float | None, float | None]:
+        """服务端自报的 avg speed(仅 /metrics 可用时);否则 (None, None)。"""
+        return parse_metrics(await self.metrics())
+
     async def probe_dialect(self) -> ServerDialect:
         d = ServerDialect()
         try:
@@ -91,4 +130,14 @@ class HttpSource:
                     d.slot_keys = set(s[0].keys())
         except (httpx.HTTPError, ValueError):
             d.slots_ok = False
+        if d.endpoint_metrics:
+            try:
+                out, inp = parse_metrics(await self.metrics())
+                d.metrics_ok = out is not None or inp is not None
+                if d.metrics_ok:
+                    d.avg_tps_source = "metrics"
+            except (httpx.HTTPError, ValueError):
+                d.metrics_ok = False
+        if d.avg_tps_source is None and (d.props_ok or d.slots_ok):
+            d.avg_tps_source = "log"        # 与 web 界面同源,但按每请求落到日志结算块
         return d
