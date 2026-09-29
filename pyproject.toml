@@ -2,6 +2,7 @@
 name = "llamadashboard"
 version = "0.2.1"
 description = "Terminal dashboard for llama.cpp: device + model runtime monitoring, cooperating with (but decoupled from) user run.bat launch recipes."
+license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
     "textual>=0.80",

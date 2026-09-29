@@ -150,3 +150,7 @@ llama.cpp 升级后日志格式漂移时,未知行只计入失败计数、面板
 `python -m llamadashboard --dump session.jsonl`,每个结算的请求追加一行 JSON。
 
 **方言实测(b11223)**:`/slots` 键面与 master 一致、`/props` 含 build_info、`/health` 免密钥、`/metrics` 默认关(不依赖)。
+
+## License
+
+[MIT](LICENSE) © 2026 tcw-znjt
