@@ -1,5 +1,7 @@
 # LlamaDashboard
 
+![LlamaDashboard 界面截图](docs/screenshots/dashboard.png)
+
 llama.cpp 运行时**设备 + 模型运行状况**的终端监控台(TUI),与你的 `run.bat` 启动脚本**配合且解耦**:
 bat 单独跑一切如旧;dashboard 单独跑能附着到任何方式启动的 server;dashboard 退出对 server 零影响。
 
